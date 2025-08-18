@@ -7,6 +7,8 @@
 #include <string>
 #include <algorithm>
 #include <cmath>
+#include <thread>
+#include <chrono>
 
 // Use nlohmann::json for convenience
 using json = nlohmann::json;
@@ -429,6 +431,29 @@ void runCalibration(std::vector<ColorRange>& colors) {
     std::cerr << "Calibration mode ended" << std::endl;
 }
 
+// Function to encode image as base64
+std::string encodeImageToBase64(const cv::Mat& image) {
+    std::vector<uchar> buffer;
+    std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 80}; // Compress to reduce size
+    cv::imencode(".jpg", image, buffer, params);
+    
+    // Convert to base64
+    std::string encoded;
+    const char* chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    int val = 0, valb = -6;
+    for (uchar c : buffer) {
+        val = (val << 8) + c;
+        valb += 8;
+        while (valb >= 0) {
+            encoded.push_back(chars[(val >> valb) & 0x3F]);
+            valb -= 6;
+        }
+    }
+    if (valb > -6) encoded.push_back(chars[((val << 8) >> (valb + 8)) & 0x3F]);
+    while (encoded.size() % 4) encoded.push_back('=');
+    return encoded;
+}
+
 // Main tracking logic
 void runTracking(std::vector<ColorRange>& colors) {
     std::cerr << "Starting tracking mode..." << std::endl;
@@ -527,6 +552,134 @@ void runTracking(std::vector<ColorRange>& colors) {
     }
 }
 
+// Streaming mode with video frames and tracking data
+void runStreaming(std::vector<ColorRange>& colors) {
+    std::cerr << "Starting streaming mode..." << std::endl;
+    
+    // Initialize RealSense pipeline
+    rs2::pipeline pipe;
+    rs2::config cfg;
+    
+    // Configure streams with fallback
+    int width = 848, height = 480;
+    try {
+        cfg.enable_stream(RS2_STREAM_COLOR, 848, 480, RS2_FORMAT_BGR8, 90);
+        cfg.enable_stream(RS2_STREAM_DEPTH, 848, 480, RS2_FORMAT_Z16, 90);
+        auto profile = pipe.start(cfg);
+        std::cerr << "Started streaming at 848x480 @ 90 FPS" << std::endl;
+    } catch (const rs2::error& e) {
+        std::cerr << "848x480 @ 90 FPS not available, trying 1280x720 @ 30 FPS: " << e.what() << std::endl;
+        cfg.disable_all_streams();
+        cfg.enable_stream(RS2_STREAM_COLOR, 1280, 720, RS2_FORMAT_BGR8, 30);
+        cfg.enable_stream(RS2_STREAM_DEPTH, 1280, 720, RS2_FORMAT_Z16, 30);
+        auto profile = pipe.start(cfg);
+        width = 1280;
+        height = 720;
+        std::cerr << "Started streaming at 1280x720 @ 30 FPS" << std::endl;
+    }
+
+    // Get camera intrinsics and create alignment object
+    auto profile = pipe.get_active_profile();
+    auto intrinsics = profile.get_stream(RS2_STREAM_COLOR).as<rs2::video_stream_profile>().get_intrinsics();
+    rs2::align align_to_color(RS2_STREAM_COLOR);
+
+    std::cerr << "Ball tracker streaming initialized. Press Ctrl+C to stop." << std::endl;
+    
+    while (true) {
+        rs2::frameset frames;
+        if (!pipe.try_wait_for_frames(&frames, 100)) {
+            continue;
+        }
+        
+        auto aligned_frames = align_to_color.process(frames);
+        auto color_frame = aligned_frames.get_color_frame();
+        auto depth_frame = aligned_frames.get_depth_frame();
+        
+        if (!color_frame || !depth_frame) continue;
+
+        // Convert frames to OpenCV matrices
+        cv::Mat color_image(cv::Size(width, height), CV_8UC3, (void*)color_frame.get_data(), cv::Mat::AUTO_STEP);
+        cv::Mat hsv_image;
+        cv::cvtColor(color_image, hsv_image, cv::COLOR_BGR2HSV);
+
+        // Create display image with ball overlays
+        cv::Mat display_image = color_image.clone();
+        std::vector<BallDetection> all_detections;
+        
+        // Detect balls for each color
+        for (const auto& color : colors) {
+            std::vector<cv::Point2f> centers;
+            detectBalls(hsv_image, color, centers);
+
+            // Draw color for visualization
+            cv::Scalar draw_color;
+            if (color.name == "pink") draw_color = cv::Scalar(147, 20, 255);      // Pink in BGR
+            else if (color.name == "orange") draw_color = cv::Scalar(0, 165, 255); // Orange in BGR
+            else if (color.name == "green") draw_color = cv::Scalar(0, 255, 0);    // Green in BGR
+            else if (color.name == "yellow") draw_color = cv::Scalar(0, 255, 255); // Yellow in BGR
+
+            for (const auto& center : centers) {
+                int x = static_cast<int>(center.x);
+                int y = static_cast<int>(center.y);
+                
+                if (x >= 0 && x < width && y >= 0 && y < height) {
+                    float depth = depth_frame.get_distance(x, y);
+                    if (depth > 0 && depth < MAX_DEPTH) {
+                        // Deproject 2D pixel to 3D point
+                        float pixel[2] = {center.x, center.y};
+                        float point[3];
+                        rs2_deproject_pixel_to_point(point, &intrinsics, pixel, depth);
+
+                        all_detections.push_back({color.name, center, point[0], point[1], point[2], 1.0f});
+                        
+                        // Draw ball on display image
+                        cv::circle(display_image, center, 15, draw_color, 3);
+                        cv::putText(display_image, color.name, cv::Point(center.x - 20, center.y - 20),
+                                   cv::FONT_HERSHEY_SIMPLEX, 0.7, draw_color, 2);
+                        
+                        // Add 3D coordinates text
+                        std::string coord_text = "(" + std::to_string(point[0]).substr(0, 4) + "," +
+                                               std::to_string(point[1]).substr(0, 4) + "," +
+                                               std::to_string(point[2]).substr(0, 4) + ")";
+                        cv::putText(display_image, coord_text, cv::Point(center.x - 30, center.y + 30),
+                                   cv::FONT_HERSHEY_SIMPLEX, 0.4, draw_color, 1);
+                    }
+                }
+            }
+        }
+
+        // Output tracking data
+        std::string tracking_data = "";
+        if (!all_detections.empty()) {
+            for (size_t i = 0; i < all_detections.size(); ++i) {
+                const auto& ball = all_detections[i];
+                tracking_data += ball.name + "," +
+                               std::to_string(ball.world_x) + "," +
+                               std::to_string(ball.world_y) + "," +
+                               std::to_string(ball.world_z);
+                if (i < all_detections.size() - 1) {
+                    tracking_data += ";";
+                }
+            }
+        }
+
+        // Encode image to base64
+        std::string encoded_image = encodeImageToBase64(display_image);
+        
+        // Output in format: FRAME:<base64_image>|TRACK:<tracking_data>
+        std::cout << "FRAME:" << encoded_image << "|TRACK:" << tracking_data << std::endl;
+        std::cout.flush();
+        
+        // Release matrices to prevent memory leaks
+        color_image.release();
+        hsv_image.release();
+        display_image.release();
+        
+        // Small delay to prevent overwhelming the output
+        std::this_thread::sleep_for(std::chrono::milliseconds(33)); // ~30 FPS
+    }
+}
+
 int main(int argc, char* argv[]) {
     try {
         // Default color values optimized for best separation: pink, orange, green, yellow
@@ -544,6 +697,8 @@ int main(int argc, char* argv[]) {
         // Check for command-line argument to determine mode
         if (argc > 1 && std::string(argv[1]) == "calibrate") {
             runCalibration(colors);
+        } else if (argc > 1 && std::string(argv[1]) == "stream") {
+            runStreaming(colors);
         } else {
             runTracking(colors);
         }
