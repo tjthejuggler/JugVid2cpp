@@ -2,10 +2,11 @@
 
 A high-performance C++ application for real-time 3D tracking of juggling balls using Intel RealSense depth cameras and OpenCV computer vision.
 
-**Last Updated:** 2025-08-16 16:04:00 UTC
+**Last Updated:** 2025-08-21 20:10:00 UTC
 
 ## Features
 
+- **Command-line arguments** for timestamped output and reduced resolution
 - **Real-time 3D tracking** of pink, orange, green, and yellow juggling balls
 - **Interactive calibration mode** with click-to-calibrate functionality
 - **Smart occlusion handling** - merges nearby detections when fingers partially cover balls
@@ -78,52 +79,49 @@ cmake --build . --config Release
 
 ## Usage
 
-### Calibration Mode (Recommended First Step)
-Before using the tracker, calibrate it for your specific lighting conditions and ball colors:
+The application has three main modes: `tracking` (default), `stream`, and `calibrate`. You can control the performance and output with a rich set of command-line arguments.
 
-```bash
-# Start interactive calibration mode
-./build/bin/ball_tracker calibrate
+### Command-line Arguments
 
-# On Windows
-./build/bin/ball_tracker.exe calibrate
-```
+| Argument | Short | Description | Example |
+|---|---|---|---|
+| `calibrate` | | Runs the interactive calibration mode. | `./build/bin/ball_tracker calibrate` |
+| `stream` | | Runs in streaming mode with video and tracking data. | `./build/bin/ball_tracker stream` |
+| `--timestamp` | `-t` | Adds a Unix timestamp to the beginning of each output line. | `./build/bin/ball_tracker -t` |
+| `--high-fps` | `-r` | Prioritizes high-FPS, lower-resolution camera modes. | `./build/bin/ball_tracker -r` |
+| `--width <val>` | | Sets a custom camera width. | `./build/bin/ball_tracker --width 848` |
+| `--height <val>`| | Sets a custom camera height. | `./build/bin/ball_tracker --height 480` |
+| `--fps <val>` | | Sets a custom camera FPS. | `./build/bin/ball_tracker --fps 90` |
+| `--downscale <f>`| | Sets the image processing downscale factor (e.g., 0.5 for half-res). | `./build/bin/ball_tracker --downscale 0.5`|
 
-**Calibration Interface:**
-- **Live camera feed** shows detected balls with colored circles and labels
-- **Click-to-calibrate**: Simply click on a ball in the video to automatically extract its HSV values
-- **Color selection**: Use number keys to choose which color you're calibrating
-- **Real-time feedback**: See HSV ranges and detection results immediately
-- **Intelligent HSV extraction**: Samples a 5x5 pixel area and calculates optimal ranges with tolerance
+### Performance Tuning Examples
 
-**Calibration Workflow:**
-1. **Select color**: Press '1' for Pink, '2' for Orange, '3' for Green, '4' for Yellow
-2. **Click on ball**: Click directly on a ball of the selected color in the camera feed
-3. **Automatic calibration**: HSV values are automatically extracted and set
-4. **Verify detection**: See if the ball is now properly detected (colored circle appears)
-5. **Repeat**: Switch colors and calibrate other balls
-6. **Save**: Press 's' to save your calibration
+- **Maximum Performance**: Use the high-fps preset, which tries `848x480 @ 90 FPS` first.
+  ```bash
+  ./build/bin/ball_tracker --high-fps
+  ```
 
-**Calibration Controls:**
-- **'1', '2', '3', '4'**: Select Pink, Orange, Green, or Yellow color for calibration
-- **Mouse click**: Click on a ball to calibrate the currently selected color
-- **'s'**: Save current settings to `ball_settings.json`
-- **'r'**: Reset to default values
-- **'q' or ESC**: Quit calibration mode
+- **Maximum Quality**: Run at a specific high resolution. The app will try 90 FPS, then 60, then 30.
+  ```bash
+  ./build/bin/ball_tracker --width 1280 --height 720
+  ```
 
-### Tracking Mode
-```bash
-# Run the ball tracker (uses saved calibration settings)
-./build/bin/ball_tracker
-
-# On Windows
-./build/bin/ball_tracker.exe
-```
+- **Custom Configuration**: Run at a very specific mode and adjust the processing load.
+  ```bash
+  ./build/bin/ball_tracker --width 848 --height 480 --fps 90 --downscale 0.4
+  ```
 
 ### Output Format
-The application continuously outputs detected ball positions to stdout in the following format:
+The application continuously outputs detected ball positions to stdout.
+
+**Default Format:**
 ```
 ball_name,X,Y,Z;ball_name,X,Y,Z
+```
+
+**With `--timestamp`:**
+```
+timestamp|ball_name,X,Y,Z;ball_name,X,Y,Z
 ```
 
 **Example output:**

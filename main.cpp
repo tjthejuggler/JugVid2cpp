@@ -9,9 +9,26 @@
 #include <cmath>
 #include <thread>
 #include <chrono>
+#include <atomic>
 
 // Use nlohmann::json for convenience
 using json = nlohmann::json;
+
+// Struct to hold command-line arguments
+struct AppConfig {
+    bool show_timestamp = false;
+    std::string mode = "tracking";
+    int width = 0;
+    int height = 0;
+    int fps = 0;
+    double downscale_factor = 0.5; // Default to 50% downscaling for performance
+    bool high_fps_preferred = false;
+};
+
+// Camera configuration presets
+struct CameraMode {
+    int width, height, fps;
+};
 
 // Minimum contour area to filter out noise
 const double MIN_CONTOUR_AREA = 100.0;
@@ -254,40 +271,75 @@ void onMouse(int event, int x, int y, int flags, void* userdata) {
     }
 }
 
-// Unified function to detect balls for a given color range with merging
-void detectBalls(const cv::Mat& hsv_frame, const ColorRange& color, std::vector<cv::Point2f>& centers) {
-    cv::Mat mask;
-    cv::inRange(hsv_frame, color.min_hsv, color.max_hsv, mask);
-    
-    // Handle second HSV range if valid
-    if (color.min_hsv2[0] >= 0 && color.max_hsv2[0] >= 0) {
-        cv::Mat mask2;
-        cv::inRange(hsv_frame, color.min_hsv2, color.max_hsv2, mask2);
-        cv::bitwise_or(mask, mask2, mask);
-    }
-    
-    // Morphological operations to clean up the mask
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
-    cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
-    cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
-    
-    // Find contours
-    std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-    
-    // Process contours to get initial centers
-    std::vector<cv::Point2f> initial_centers;
-    for (const auto& contour : contours) {
-        if (cv::contourArea(contour) > MIN_CONTOUR_AREA) {
-            cv::Moments m = cv::moments(contour);
-            if (m.m00 > 0) {
-                initial_centers.push_back(cv::Point2f(m.m10 / m.m00, m.m01 / m.m00));
+// Unified function to detect balls for a given color range with merging and downscaling
+void detectBalls(const cv::Mat& hsv_frame, const ColorRange& color, std::vector<cv::Point2f>& centers, double downscale_factor = 1.0) {
+    if (downscale_factor == 1.0) {
+        // Original processing path
+        cv::Mat mask;
+        cv::inRange(hsv_frame, color.min_hsv, color.max_hsv, mask);
+        if (color.min_hsv2[0] >= 0) {
+            cv::Mat mask2;
+            cv::inRange(hsv_frame, color.min_hsv2, color.max_hsv2, mask2);
+            cv::bitwise_or(mask, mask2, mask);
+        }
+
+        cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
+        cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
+        cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
+
+        std::vector<std::vector<cv::Point>> contours;
+        cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+        std::vector<cv::Point2f> initial_centers;
+        for (const auto& contour : contours) {
+            if (cv::contourArea(contour) > MIN_CONTOUR_AREA) {
+                cv::Moments m = cv::moments(contour);
+                if (m.m00 > 0) {
+                    initial_centers.push_back(cv::Point2f(m.m10 / m.m00, m.m01 / m.m00));
+                }
             }
         }
+        centers = mergeNearbyDetections(initial_centers);
+
+    } else {
+        // Optimized path with downscaling
+        cv::Mat resized_hsv;
+        cv::resize(hsv_frame, resized_hsv, cv::Size(), downscale_factor, downscale_factor, cv::INTER_LINEAR);
+
+        cv::Mat mask;
+        cv::inRange(resized_hsv, color.min_hsv, color.max_hsv, mask);
+        if (color.min_hsv2[0] >= 0) {
+            cv::Mat mask2;
+            cv::inRange(resized_hsv, color.min_hsv2, color.max_hsv2, mask2);
+            cv::bitwise_or(mask, mask2, mask);
+        }
+
+        // Use smaller kernel for smaller image
+        cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+        cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
+        cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
+
+        std::vector<std::vector<cv::Point>> contours;
+        cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+        std::vector<cv::Point2f> initial_centers;
+        double scaled_min_area = MIN_CONTOUR_AREA * downscale_factor * downscale_factor;
+        for (const auto& contour : contours) {
+            if (cv::contourArea(contour) > scaled_min_area) {
+                cv::Moments m = cv::moments(contour);
+                if (m.m00 > 0) {
+                    initial_centers.push_back(cv::Point2f(m.m10 / m.m00, m.m01 / m.m00));
+                }
+            }
+        }
+        
+        // Scale centers back to original image size
+        for (auto& center : initial_centers) {
+            center.x /= downscale_factor;
+            center.y /= downscale_factor;
+        }
+        centers = mergeNearbyDetections(initial_centers);
     }
-    
-    // Merge nearby detections to handle occlusion
-    centers = mergeNearbyDetections(initial_centers);
 }
 
 // Interactive calibration mode
@@ -455,29 +507,40 @@ std::string encodeImageToBase64(const cv::Mat& image) {
 }
 
 // Main tracking logic
-void runTracking(std::vector<ColorRange>& colors) {
+void runTracking(std::vector<ColorRange>& colors, const AppConfig& config) {
     std::cerr << "Starting tracking mode..." << std::endl;
     
-    // Initialize RealSense pipeline
     rs2::pipeline pipe;
     rs2::config cfg;
-    
-    // Configure streams with fallback
-    int width = 848, height = 480;
-    try {
-        cfg.enable_stream(RS2_STREAM_COLOR, 848, 480, RS2_FORMAT_BGR8, 90);
-        cfg.enable_stream(RS2_STREAM_DEPTH, 848, 480, RS2_FORMAT_Z16, 90);
-        auto profile = pipe.start(cfg);
-        std::cerr << "Started at 848x480 @ 90 FPS" << std::endl;
-    } catch (const rs2::error& e) {
-        std::cerr << "848x480 @ 90 FPS not available, trying 1280x720 @ 30 FPS: " << e.what() << std::endl;
-        cfg.disable_all_streams();
-        cfg.enable_stream(RS2_STREAM_COLOR, 1280, 720, RS2_FORMAT_BGR8, 30);
-        cfg.enable_stream(RS2_STREAM_DEPTH, 1280, 720, RS2_FORMAT_Z16, 30);
-        auto profile = pipe.start(cfg);
-        width = 1280;
-        height = 720;
-        std::cerr << "Started at 1280x720 @ 30 FPS" << std::endl;
+    int width = 0, height = 0;
+
+    // Define a list of prioritized camera modes to try
+    std::vector<CameraMode> modes_to_try;
+    if (config.high_fps_preferred) {
+        modes_to_try = {{848, 480, 90}, {640, 480, 60}, {1280, 720, 30}};
+    } else {
+        modes_to_try = {{1280, 720, 90}, {1280, 720, 60}, {1280, 720, 30}, {848, 480, 90}, {640, 480, 60}};
+    }
+
+    bool started = false;
+    for (const auto& mode : modes_to_try) {
+        try {
+            cfg.disable_all_streams();
+            cfg.enable_stream(RS2_STREAM_COLOR, mode.width, mode.height, RS2_FORMAT_BGR8, mode.fps);
+            cfg.enable_stream(RS2_STREAM_DEPTH, mode.width, mode.height, RS2_FORMAT_Z16, mode.fps);
+            pipe.start(cfg);
+            width = mode.width;
+            height = mode.height;
+            std::cerr << "Successfully started camera at " << width << "x" << height << " @ " << mode.fps << " FPS" << std::endl;
+            started = true;
+            break;
+        } catch (const rs2::error& e) {
+            std::cerr << "Warning: Could not start " << mode.width << "x" << mode.height << " @ " << mode.fps << " FPS. Trying next mode..." << std::endl;
+        }
+    }
+
+    if (!started) {
+        throw std::runtime_error("Failed to start RealSense camera with any available mode.");
     }
 
     // Get camera intrinsics and create alignment object
@@ -509,7 +572,7 @@ void runTracking(std::vector<ColorRange>& colors) {
         // Detect balls for each color
         for (const auto& color : colors) {
             std::vector<cv::Point2f> centers;
-            detectBalls(hsv_image, color, centers);
+            detectBalls(hsv_image, color, centers, config.downscale_factor);
 
             for (const auto& center : centers) {
                 int x = static_cast<int>(center.x);
@@ -532,6 +595,12 @@ void runTracking(std::vector<ColorRange>& colors) {
         // Output results in the specified format
         if (!all_detections.empty()) {
             std::string output_line;
+            if (config.show_timestamp) {
+                auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()
+                ).count();
+                output_line += std::to_string(timestamp) + "|";
+            }
             for (size_t i = 0; i < all_detections.size(); ++i) {
                 const auto& ball = all_detections[i];
                 output_line += ball.name + "," +
@@ -553,29 +622,57 @@ void runTracking(std::vector<ColorRange>& colors) {
 }
 
 // Streaming mode with video frames and tracking data
-void runStreaming(std::vector<ColorRange>& colors) {
+void runStreaming(std::vector<ColorRange>& colors, const AppConfig& config) {
     std::cerr << "Starting streaming mode..." << std::endl;
     
-    // Initialize RealSense pipeline
     rs2::pipeline pipe;
     rs2::config cfg;
-    
-    // Configure streams with fallback
-    int width = 848, height = 480;
-    try {
-        cfg.enable_stream(RS2_STREAM_COLOR, 848, 480, RS2_FORMAT_BGR8, 90);
-        cfg.enable_stream(RS2_STREAM_DEPTH, 848, 480, RS2_FORMAT_Z16, 90);
-        auto profile = pipe.start(cfg);
-        std::cerr << "Started streaming at 848x480 @ 90 FPS" << std::endl;
-    } catch (const rs2::error& e) {
-        std::cerr << "848x480 @ 90 FPS not available, trying 1280x720 @ 30 FPS: " << e.what() << std::endl;
-        cfg.disable_all_streams();
-        cfg.enable_stream(RS2_STREAM_COLOR, 1280, 720, RS2_FORMAT_BGR8, 30);
-        cfg.enable_stream(RS2_STREAM_DEPTH, 1280, 720, RS2_FORMAT_Z16, 30);
-        auto profile = pipe.start(cfg);
-        width = 1280;
-        height = 720;
-        std::cerr << "Started streaming at 1280x720 @ 30 FPS" << std::endl;
+    int width = 0, height = 0;
+    bool started = false;
+
+    // 1. Try user-specified settings first
+    if (config.width > 0 && config.height > 0 && config.fps > 0) {
+        try {
+            cfg.enable_stream(RS2_STREAM_COLOR, config.width, config.height, RS2_FORMAT_BGR8, config.fps);
+            cfg.enable_stream(RS2_STREAM_DEPTH, config.width, config.height, RS2_FORMAT_Z16, config.fps);
+            pipe.start(cfg);
+            width = config.width;
+            height = config.height;
+            std::cerr << "Successfully started camera with user settings: " << width << "x" << height << " @ " << config.fps << " FPS" << std::endl;
+            started = true;
+        } catch (const rs2::error& e) {
+            std::cerr << "Warning: Could not start with user-specified settings. " << e.what() << ". Falling back to default modes." << std::endl;
+        }
+    }
+
+    // 2. If user settings fail or are not provided, use intelligent fallback
+    if (!started) {
+        std::vector<CameraMode> modes_to_try;
+        if (config.high_fps_preferred) {
+            modes_to_try = {{848, 480, 90}, {640, 480, 60}, {1280, 720, 30}};
+        } else {
+            modes_to_try = {{1280, 720, 90}, {1280, 720, 60}, {1280, 720, 30}, {848, 480, 90}, {640, 480, 60}};
+        }
+
+        for (const auto& mode : modes_to_try) {
+            try {
+                cfg.disable_all_streams();
+                cfg.enable_stream(RS2_STREAM_COLOR, mode.width, mode.height, RS2_FORMAT_BGR8, mode.fps);
+                cfg.enable_stream(RS2_STREAM_DEPTH, mode.width, mode.height, RS2_FORMAT_Z16, mode.fps);
+                pipe.start(cfg);
+                width = mode.width;
+                height = mode.height;
+                std::cerr << "Successfully started camera at " << width << "x" << height << " @ " << mode.fps << " FPS" << std::endl;
+                started = true;
+                break;
+            } catch (const rs2::error& e) {
+                std::cerr << "Info: Could not start " << mode.width << "x" << mode.height << " @ " << mode.fps << ". Trying next mode." << std::endl;
+            }
+        }
+    }
+
+    if (!started) {
+        throw std::runtime_error("Failed to start RealSense camera with any available mode.");
     }
 
     // Get camera intrinsics and create alignment object
@@ -609,7 +706,7 @@ void runStreaming(std::vector<ColorRange>& colors) {
         // Detect balls for each color
         for (const auto& color : colors) {
             std::vector<cv::Point2f> centers;
-            detectBalls(hsv_image, color, centers);
+            detectBalls(hsv_image, color, centers, config.downscale_factor);
 
             // Draw color for visualization
             cv::Scalar draw_color;
@@ -649,7 +746,13 @@ void runStreaming(std::vector<ColorRange>& colors) {
         }
 
         // Output tracking data
-        std::string tracking_data = "";
+        std::string tracking_data;
+        if (config.show_timestamp) {
+            auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()
+            ).count();
+            tracking_data += std::to_string(timestamp) + "|";
+        }
         if (!all_detections.empty()) {
             for (size_t i = 0; i < all_detections.size(); ++i) {
                 const auto& ball = all_detections[i];
@@ -674,33 +777,58 @@ void runStreaming(std::vector<ColorRange>& colors) {
         color_image.release();
         hsv_image.release();
         display_image.release();
-        
-        // Small delay to prevent overwhelming the output
-        std::this_thread::sleep_for(std::chrono::milliseconds(33)); // ~30 FPS
     }
+}
+
+// Function to parse command-line arguments
+AppConfig parseArguments(int argc, char* argv[]) {
+    AppConfig config;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--timestamp" || arg == "-t") {
+            config.show_timestamp = true;
+        } else if (arg == "--high-fps" || arg == "-r") {
+            config.high_fps_preferred = true;
+        } else if (arg == "--width" && i + 1 < argc) {
+            config.width = std::stoi(argv[++i]);
+        } else if (arg == "--height" && i + 1 < argc) {
+            config.height = std::stoi(argv[++i]);
+        } else if (arg == "--fps" && i + 1 < argc) {
+            config.fps = std::stoi(argv[++i]);
+        } else if (arg == "--downscale" && i + 1 < argc) {
+            config.downscale_factor = std::stod(argv[++i]);
+        } else if (arg == "calibrate" || arg == "stream" || arg == "tracking") {
+            config.mode = arg;
+        } else {
+            std::cerr << "Warning: Unknown argument '" << arg << "' ignored." << std::endl;
+        }
+    }
+    return config;
 }
 
 int main(int argc, char* argv[]) {
     try {
-        // Default color values optimized for best separation: pink, orange, green, yellow
-        // Note: Pink and orange are close in HSV space - for best results use yellow, pink, green
+        // Parse command-line arguments
+        AppConfig config = parseArguments(argc, argv);
+
+        // Default color values
         std::vector<ColorRange> colors = {
-            ColorRange("pink", cv::Scalar(150, 150, 90), cv::Scalar(170, 255, 255)),    // Higher hue, more saturated pink
-            ColorRange("orange", cv::Scalar(5, 150, 120), cv::Scalar(15, 255, 255)),    // Lower hue, more saturated orange
-            ColorRange("green", cv::Scalar(45, 120, 70), cv::Scalar(75, 255, 255)),     // Reliable green range
-            ColorRange("yellow", cv::Scalar(25, 120, 100), cv::Scalar(35, 255, 255))    // Reliable yellow range
+            ColorRange("pink", cv::Scalar(150, 150, 90), cv::Scalar(170, 255, 255)),
+            ColorRange("orange", cv::Scalar(5, 150, 120), cv::Scalar(15, 255, 255)),
+            ColorRange("green", cv::Scalar(45, 120, 70), cv::Scalar(75, 255, 255)),
+            ColorRange("yellow", cv::Scalar(25, 120, 100), cv::Scalar(35, 255, 255))
         };
         
-        // Load settings from file, if it exists
+        // Load settings from file
         loadSettings(colors);
 
-        // Check for command-line argument to determine mode
-        if (argc > 1 && std::string(argv[1]) == "calibrate") {
+        // Run selected mode
+        if (config.mode == "calibrate") {
             runCalibration(colors);
-        } else if (argc > 1 && std::string(argv[1]) == "stream") {
-            runStreaming(colors);
+        } else if (config.mode == "stream") {
+            runStreaming(colors, config);
         } else {
-            runTracking(colors);
+            runTracking(colors, config);
         }
         
     } catch (const rs2::error& e) {
