@@ -10,6 +10,7 @@
 #include <thread>
 #include <chrono>
 #include <atomic>
+#include <vector>
 
 #ifdef ENABLE_HAND_TRACKING
 #include "hand_tracker.hpp"
@@ -546,7 +547,11 @@ float get_averaged_depth(const rs2::depth_frame& depth_frame, int x, int y, int 
 }
 
 // Main tracking logic
-void runTracking(std::vector<ColorRange>& colors, const AppConfig& config) {
+void runTracking(std::vector<ColorRange>& colors, const AppConfig& config
+#ifdef ENABLE_HAND_TRACKING
+, std::unique_ptr<HandTracker>& hand_tracker
+#endif
+) {
     std::cerr << "Starting tracking mode..." << std::endl;
     
     rs2::pipeline pipe;
@@ -645,6 +650,37 @@ void runTracking(std::vector<ColorRange>& colors, const AppConfig& config) {
             }
         }
 
+#ifdef ENABLE_HAND_TRACKING
+        // Hand tracking
+        if (config.track_hands && hand_tracker) {
+            auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()
+            ).count();
+            
+            auto hands = hand_tracker->DetectHands(color_image, timestamp);
+            
+            for (size_t i = 0; i < hands.size(); ++i) {
+                for (size_t j = 0; j < hands[i].normalized_landmarks.size(); ++j) {
+                    const auto& landmark = hands[i].normalized_landmarks[j];
+                    int lx = static_cast<int>(landmark.x * width);
+                    int ly = static_cast<int>(landmark.y * height);
+
+                    if (lx >= 0 && lx < width && ly >= 0 && ly < height) {
+                        float depth = get_averaged_depth(depth_frame, lx, ly, 3); // 3x3 patch
+                        if (depth > 0 && depth < MAX_DEPTH) {
+                            float pixel[2] = { (float)lx, (float)ly };
+                            float point[3];
+                            rs2_deproject_pixel_to_point(point, &intrinsics, pixel, depth);
+                            
+                            // Add hand landmark data to detections
+                            all_detections.push_back({"hand" + std::to_string(i) + "_landmark" + std::to_string(j), cv::Point2f(lx, ly), point[0], point[1], point[2], 1.0f});
+                        }
+                    }
+                }
+            }
+        }
+#endif
+
         // Output results in the specified format
         if (!all_detections.empty()) {
             std::string output_line;
@@ -675,7 +711,11 @@ void runTracking(std::vector<ColorRange>& colors, const AppConfig& config) {
 }
 
 // Streaming mode with video frames and tracking data
-void runStreaming(std::vector<ColorRange>& colors, const AppConfig& config) {
+void runStreaming(std::vector<ColorRange>& colors, const AppConfig& config
+#ifdef ENABLE_HAND_TRACKING
+, std::unique_ptr<HandTracker>& hand_tracker
+#endif
+) {
     std::cerr << "Starting streaming mode..." << std::endl;
     
     rs2::pipeline pipe;
@@ -811,6 +851,39 @@ void runStreaming(std::vector<ColorRange>& colors, const AppConfig& config) {
             }
         }
 
+#ifdef ENABLE_HAND_TRACKING
+        // Hand tracking visualization
+        if (config.track_hands && hand_tracker) {
+            auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()
+            ).count();
+
+            auto hands = hand_tracker->DetectHands(color_image, timestamp);
+
+            for (size_t i = 0; i < hands.size(); ++i) {
+                for (size_t j = 0; j < hands[i].normalized_landmarks.size(); ++j) {
+                    const auto& landmark = hands[i].normalized_landmarks[j];
+                    int lx = static_cast<int>(landmark.x * width);
+                    int ly = static_cast<int>(landmark.y * height);
+
+                    if (lx >= 0 && lx < width && ly >= 0 && ly < height) {
+                        float depth = get_averaged_depth(depth_frame, lx, ly, 3);
+                        if (depth > 0 && depth < MAX_DEPTH) {
+                            float pixel[2] = { (float)lx, (float)ly };
+                            float point[3];
+                            rs2_deproject_pixel_to_point(point, &intrinsics, pixel, depth);
+                            
+                            all_detections.push_back({"hand" + std::to_string(i) + "_landmark" + std::to_string(j), cv::Point2f(lx, ly), point[0], point[1], point[2], 1.0f});
+
+                            // Draw landmark on display image
+                            cv::circle(display_image, cv::Point(lx, ly), 5, cv::Scalar(0, 255, 255), -1);
+                        }
+                    }
+                }
+            }
+        }
+#endif
+
         // Output tracking data
         std::string tracking_data;
         if (config.show_timestamp) {
@@ -909,9 +982,17 @@ int main(int argc, char* argv[]) {
         if (config.mode == "calibrate") {
             runCalibration(colors);
         } else if (config.mode == "stream") {
-            runStreaming(colors, config);
+            #ifdef ENABLE_HAND_TRACKING
+                runStreaming(colors, config, hand_tracker);
+            #else
+                runStreaming(colors, config);
+            #endif
         } else {
-            runTracking(colors, config);
+            #ifdef ENABLE_HAND_TRACKING
+                runTracking(colors, config, hand_tracker);
+            #else
+                runTracking(colors, config);
+            #endif
         }
         
     } catch (const rs2::error& e) {
