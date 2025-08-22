@@ -506,6 +506,35 @@ std::string encodeImageToBase64(const cv::Mat& image) {
     return encoded;
 }
 
+// Helper function to get an averaged depth value from a patch of pixels
+float get_averaged_depth(const rs2::depth_frame& depth_frame, int x, int y, int patch_size) {
+    float total_depth = 0.0f;
+    int valid_pixel_count = 0;
+    
+    // Define the area to sample
+    int start_x = std::max(0, x - patch_size / 2);
+    int end_x = std::min(depth_frame.get_width() - 1, x + patch_size / 2);
+    int start_y = std::max(0, y - patch_size / 2);
+    int end_y = std::min(depth_frame.get_height() - 1, y + patch_size / 2);
+
+    for (int cy = start_y; cy <= end_y; ++cy) {
+        for (int cx = start_x; cx <= end_x; ++cx) {
+            float depth = depth_frame.get_distance(cx, cy);
+            // Only include valid depth readings (ignore 0 values)
+            if (depth > 0.0f) {
+                total_depth += depth;
+                valid_pixel_count++;
+            }
+        }
+    }
+
+    if (valid_pixel_count == 0) {
+        return 0.0f; // Return 0 if no valid depth was found
+    }
+
+    return total_depth / valid_pixel_count;
+}
+
 // Main tracking logic
 void runTracking(std::vector<ColorRange>& colors, const AppConfig& config) {
     std::cerr << "Starting tracking mode..." << std::endl;
@@ -548,6 +577,12 @@ void runTracking(std::vector<ColorRange>& colors, const AppConfig& config) {
     auto intrinsics = profile.get_stream(RS2_STREAM_COLOR).as<rs2::video_stream_profile>().get_intrinsics();
     rs2::align align_to_color(RS2_STREAM_COLOR);
 
+    // 1. Create post-processing filter objects
+    rs2::spatial_filter spat_filter;
+    rs2::temporal_filter temp_filter;
+
+    std::cerr << "RealSense post-processing filters enabled." << std::endl;
+
     std::cerr << "Ball tracker initialized. Press Ctrl+C to stop." << std::endl;
     
     while (true) {
@@ -558,9 +593,14 @@ void runTracking(std::vector<ColorRange>& colors, const AppConfig& config) {
         
         auto aligned_frames = align_to_color.process(frames);
         auto color_frame = aligned_frames.get_color_frame();
-        auto depth_frame = aligned_frames.get_depth_frame();
+        rs2::depth_frame depth_frame = aligned_frames.get_depth_frame(); // Get non-const depth frame
         
         if (!color_frame || !depth_frame) continue;
+
+        // 2. Apply the filters to the depth frame
+        // The order is important: spatial first, then temporal.
+        depth_frame = spat_filter.process(depth_frame);
+        depth_frame = temp_filter.process(depth_frame);
 
         // Convert frames to OpenCV matrices
         cv::Mat color_image(cv::Size(width, height), CV_8UC3, (void*)color_frame.get_data(), cv::Mat::AUTO_STEP);
@@ -579,7 +619,10 @@ void runTracking(std::vector<ColorRange>& colors, const AppConfig& config) {
                 int y = static_cast<int>(center.y);
                 
                 if (x >= 0 && x < width && y >= 0 && y < height) {
-                    float depth = depth_frame.get_distance(x, y);
+                    // 3. NEW, MORE ROBUST WAY:
+                    const int patch_size = 5; // Use a 5x5 pixel area
+                    float depth = get_averaged_depth(depth_frame, x, y, patch_size);
+
                     if (depth > 0 && depth < MAX_DEPTH) {
                         // Deproject 2D pixel to 3D point
                         float pixel[2] = {center.x, center.y};
@@ -680,6 +723,12 @@ void runStreaming(std::vector<ColorRange>& colors, const AppConfig& config) {
     auto intrinsics = profile.get_stream(RS2_STREAM_COLOR).as<rs2::video_stream_profile>().get_intrinsics();
     rs2::align align_to_color(RS2_STREAM_COLOR);
 
+    // 1. Create post-processing filter objects
+    rs2::spatial_filter spat_filter;
+    rs2::temporal_filter temp_filter;
+
+    std::cerr << "RealSense post-processing filters enabled." << std::endl;
+
     std::cerr << "Ball tracker streaming initialized. Press Ctrl+C to stop." << std::endl;
     
     while (true) {
@@ -690,9 +739,14 @@ void runStreaming(std::vector<ColorRange>& colors, const AppConfig& config) {
         
         auto aligned_frames = align_to_color.process(frames);
         auto color_frame = aligned_frames.get_color_frame();
-        auto depth_frame = aligned_frames.get_depth_frame();
+        rs2::depth_frame depth_frame = aligned_frames.get_depth_frame(); // Get non-const depth frame
         
         if (!color_frame || !depth_frame) continue;
+
+        // 2. Apply the filters to the depth frame
+        // The order is important: spatial first, then temporal.
+        depth_frame = spat_filter.process(depth_frame);
+        depth_frame = temp_filter.process(depth_frame);
 
         // Convert frames to OpenCV matrices
         cv::Mat color_image(cv::Size(width, height), CV_8UC3, (void*)color_frame.get_data(), cv::Mat::AUTO_STEP);
@@ -720,7 +774,9 @@ void runStreaming(std::vector<ColorRange>& colors, const AppConfig& config) {
                 int y = static_cast<int>(center.y);
                 
                 if (x >= 0 && x < width && y >= 0 && y < height) {
-                    float depth = depth_frame.get_distance(x, y);
+                    // 3. NEW, MORE ROBUST WAY:
+                    const int patch_size = 5; // Use a 5x5 pixel area
+                    float depth = get_averaged_depth(depth_frame, x, y, patch_size);
                     if (depth > 0 && depth < MAX_DEPTH) {
                         // Deproject 2D pixel to 3D point
                         float pixel[2] = {center.x, center.y};

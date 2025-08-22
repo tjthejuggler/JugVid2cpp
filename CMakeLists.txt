@@ -9,9 +9,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(PkgConfig REQUIRED)
 
 # Find Intel RealSense SDK 2.0
-find_package(realsense2 REQUIRED)
+pkg_check_modules(realsense2 REQUIRED realsense2)
 if(NOT realsense2_FOUND)
-    message(FATAL_ERROR "Intel RealSense SDK 2.0 not found. Please install librealsense2.")
+    message(FATAL_ERROR "Intel RealSense SDK 2.0 not found via pkg-config. Please ensure librealsense2 is installed correctly.")
 endif()
 
 # Find OpenCV
@@ -28,13 +28,14 @@ message(STATUS "Found OpenCV version: ${OpenCV_VERSION}")
 add_executable(ball_tracker main.cpp)
 
 # Link libraries
-target_link_libraries(ball_tracker 
-    ${realsense2_LIBRARY}
+target_link_libraries(ball_tracker
+    ${realsense2_LIBRARIES}
     ${OpenCV_LIBS}
 )
 
 # Include directories
 target_include_directories(ball_tracker PRIVATE
+    ${realsense2_INCLUDE_DIRS}
     ${OpenCV_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}  # For json.hpp
 )

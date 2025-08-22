@@ -7,12 +7,15 @@ set -e  # Exit on any error
 
 echo "=== Ball Tracker Build Script ==="
 
-# Create build directory if it doesn't exist
-if [ ! -d "build" ]; then
-    echo "Creating build directory..."
-    mkdir build
+# Force a clean build by removing the old build directory
+if [ -d "build" ]; then
+    echo "Removing old build directory..."
+    rm -rf build
 fi
 
+# Create a fresh build directory
+echo "Creating build directory..."
+mkdir build
 cd build
 
 # Configure with CMake
