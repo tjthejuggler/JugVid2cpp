@@ -7,38 +7,62 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Find required packages
 find_package(PkgConfig REQUIRED)
-
-# Find Intel RealSense SDK 2.0
 pkg_check_modules(realsense2 REQUIRED realsense2)
-if(NOT realsense2_FOUND)
-    message(FATAL_ERROR "Intel RealSense SDK 2.0 not found via pkg-config. Please ensure librealsense2 is installed correctly.")
-endif()
 
-# Find OpenCV
-find_package(OpenCV REQUIRED)
-if(NOT OpenCV_FOUND)
-    message(FATAL_ERROR "OpenCV not found. Please install OpenCV 4.x.")
-endif()
+# Add an option to enable/disable hand tracking
+option(ENABLE_HAND_TRACKING "Enable MediaPipe hand tracking feature" OFF)
 
-# Print found library versions for debugging
-message(STATUS "Found RealSense SDK version: ${realsense2_VERSION}")
-message(STATUS "Found OpenCV version: ${OpenCV_VERSION}")
-
-# Create executable
+# Create the executable target
 add_executable(ball_tracker main.cpp)
 
-# Link libraries
-target_link_libraries(ball_tracker
-    ${realsense2_LIBRARIES}
-    ${OpenCV_LIBS}
-)
+# Link against the basic required library (RealSense)
+target_link_libraries(ball_tracker PRIVATE ${realsense2_LIBRARIES})
+target_include_directories(ball_tracker PRIVATE ${realsense2_INCLUDE_DIRS})
 
-# Include directories
-target_include_directories(ball_tracker PRIVATE
-    ${realsense2_INCLUDE_DIRS}
-    ${OpenCV_INCLUDE_DIRS}
-    ${CMAKE_CURRENT_SOURCE_DIR}  # For json.hpp
-)
+# =================== FINAL ABSOLUTE PATH CONFIGURATION ===================
+if(ENABLE_HAND_TRACKING)
+    message(STATUS "Hand tracking feature is ENABLED.")
+    
+    # Add the compile definition directly to the target
+    target_compile_definitions(ball_tracker PRIVATE ENABLE_HAND_TRACKING)
+
+    # Find OpenCV
+    find_package(OpenCV REQUIRED)
+    
+    # Define paths
+    set(MEDIAPIPE_DIR "/home/twain/Projects/mediapipe")
+    
+    # --- YOUR UNIQUE EXECUTION ROOT PATH ---
+    set(BAZEL_EXEC_ROOT "/home/twain/.cache/bazel/_bazel_twain/ec941616a958ac8faad7b9d6b9772085/execroot/mediapipe")
+
+    # Add all necessary include paths using the absolute path
+    target_include_directories(ball_tracker PRIVATE
+        ${MEDIAPIPE_DIR}
+        ${MEDIAPIPE_DIR}/bazel-bin
+        ${BAZEL_EXEC_ROOT}/external/com_google_absl
+        ${BAZEL_EXEC_ROOT}/bazel-out/k8-fastbuild/bin/external/com_github_glog_glog/_virtual_includes/glog
+        ${BAZEL_EXEC_ROOT}/bazel-out/k8-fastbuild/bin/external/com_github_gflags_gflags/_virtual_includes/gflags
+        ${BAZEL_EXEC_ROOT}/external/com_google_protobuf/src
+        ${BAZEL_EXEC_ROOT}/external/org_tensorflow
+        ${BAZEL_EXEC_ROOT}/external/flatbuffers/include
+        ${OpenCV_INCLUDE_DIRS}
+    )
+    
+    # Define the full, absolute path to the MediaPipe library
+    set(MEDIAPIPE_LIBRARY "${MEDIAPIPE_DIR}/bazel-bin/mediapipe/tasks/cc/vision/hand_landmarker/libhand_landmarker.so")
+    
+    # Link the executable against OpenCV and the MediaPipe library
+    target_link_libraries(ball_tracker PRIVATE ${OpenCV_LIBS} ${MEDIAPIPE_LIBRARY})
+
+else()
+    message(STATUS "Hand tracking feature is DISABLED.")
+    
+    # Find OpenCV for basic functionality
+    find_package(OpenCV REQUIRED)
+    target_link_libraries(ball_tracker PRIVATE ${OpenCV_LIBS})
+    target_include_directories(ball_tracker PRIVATE ${OpenCV_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
+# =======================================================================
 
 # Compiler-specific optimizations
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")

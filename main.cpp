@@ -11,6 +11,10 @@
 #include <chrono>
 #include <atomic>
 
+#ifdef ENABLE_HAND_TRACKING
+#include "hand_tracker.hpp"
+#endif
+
 // Use nlohmann::json for convenience
 using json = nlohmann::json;
 
@@ -23,6 +27,7 @@ struct AppConfig {
     int fps = 0;
     double downscale_factor = 0.5; // Default to 50% downscaling for performance
     bool high_fps_preferred = false;
+    bool track_hands = false;
 };
 
 // Camera configuration presets
@@ -58,6 +63,7 @@ struct BallDetection {
     cv::Point2f center;
     float world_x, world_y, world_z;
     float confidence; // For merging decisions
+    bool is_held = false;
 };
 
 // Global variables for calibration mode
@@ -76,6 +82,10 @@ CalibrationState cal_state;
 // Function to calculate distance between two points
 double calculateDistance(const cv::Point2f& p1, const cv::Point2f& p2) {
     return std::sqrt(std::pow(p1.x - p2.x, 2) + std::pow(p1.y - p2.y, 2));
+}
+
+float calculate_3d_distance(float x1, float y1, float z1, float x2, float y2, float z2) {
+    return std::sqrt(std::pow(x1 - x2, 2) + std::pow(y1 - y2, 2) + std::pow(z1 - z2, 2));
 }
 
 // Function to merge nearby detections of the same color
@@ -853,6 +863,8 @@ AppConfig parseArguments(int argc, char* argv[]) {
             config.fps = std::stoi(argv[++i]);
         } else if (arg == "--downscale" && i + 1 < argc) {
             config.downscale_factor = std::stod(argv[++i]);
+        } else if (arg == "--track-hands") {
+            config.track_hands = true;
         } else if (arg == "calibrate" || arg == "stream" || arg == "tracking") {
             config.mode = arg;
         } else {
@@ -877,6 +889,21 @@ int main(int argc, char* argv[]) {
         
         // Load settings from file
         loadSettings(colors);
+
+#ifdef ENABLE_HAND_TRACKING
+    std::unique_ptr<HandTracker> hand_tracker;
+    if (config.track_hands) {
+        try {
+            // IMPORTANT: User must provide the correct path to the downloaded .task model
+            std::string model_path = "/home/twain/Projects/mediapipe/hand_landmarker.task";
+            hand_tracker = std::make_unique<HandTracker>(model_path);
+            std::cerr << "Hand tracking has been enabled." << std::endl;
+        } catch (const std::exception& e) {
+            std::cerr << "FATAL: Could not initialize hand tracker: " << e.what() << std::endl;
+            config.track_hands = false; // Disable to prevent crashes
+        }
+    }
+#endif
 
         // Run selected mode
         if (config.mode == "calibrate") {

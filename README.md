@@ -2,7 +2,7 @@
 
 A high-performance C++ application for real-time 3D tracking of juggling balls using Intel RealSense depth cameras and OpenCV computer vision.
 
-**Last Updated:** 2025-08-21 20:10:00 UTC
+**Last Updated:** 2025-08-22 09:44:00 UTC
 
 ## Features
 
@@ -18,6 +18,8 @@ A high-performance C++ application for real-time 3D tracking of juggling balls u
 - **Optimized memory management** to prevent leaks during continuous operation
 - **Standard output protocol** for easy integration with other applications
 
+- **Optional Hand Tracking**: Conditionally compiled feature to detect if a ball is held, using MediaPipe.
+
 ## Requirements
 
 ### Hardware
@@ -31,6 +33,7 @@ A high-performance C++ application for real-time 3D tracking of juggling balls u
 - **Intel RealSense SDK 2.0**: Latest version from [GitHub releases](https://github.com/IntelRealSense/librealsense/releases)
 - **OpenCV**: Version 4.x from [opencv.org](https://opencv.org/releases/)
 - **nlohmann/json**: Included as `json.hpp` (automatically downloaded)
+- **MediaPipe** (Optional): For hand tracking. Requires separate build.
 
 ## Installation
 
@@ -77,6 +80,22 @@ cmake --build . --config Release
 # The executable will be in build/bin/ball_tracker (or ball_tracker.exe on Windows)
 ```
 
+### 3. Build with Optional Hand Tracking (Linux/macOS)
+
+To enable the hand tracking feature, you must have MediaPipe pre-built. Then, run CMake with the `ENABLE_HAND_TRACKING` option.
+
+```bash
+# Navigate to build directory
+cd /path/to/BallTracker/build
+
+# Configure with hand tracking enabled
+# You MUST provide the path to your MediaPipe source directory
+cmake -DENABLE_HAND_TRACKING=ON -DMEDIAPIPE_DIR=/path/to/your/mediapipe ..
+
+# Build the application
+cmake --build . --config Release
+```
+
 ## Usage
 
 The application has three main modes: `tracking` (default), `stream`, and `calibrate`. You can control the performance and output with a rich set of command-line arguments.
@@ -93,6 +112,7 @@ The application has three main modes: `tracking` (default), `stream`, and `calib
 | `--height <val>`| | Sets a custom camera height. | `./build/bin/ball_tracker --height 480` |
 | `--fps <val>` | | Sets a custom camera FPS. | `./build/bin/ball_tracker --fps 90` |
 | `--downscale <f>`| | Sets the image processing downscale factor (e.g., 0.5 for half-res). | `./build/bin/ball_tracker --downscale 0.5`|
+| `--track-hands` | | Enables hand tracking if compiled with the feature. | `./build/bin/ball_tracker --track-hands` |
 
 ### Performance Tuning Examples
 
@@ -119,6 +139,12 @@ The application continuously outputs detected ball positions to stdout.
 ball_name,X,Y,Z;ball_name,X,Y,Z
 ```
 
+**With Hand Tracking Enabled:**
+The output for each ball will include a "held" or "free" status.
+```
+ball_name,X,Y,Z,status;...
+```
+
 **With `--timestamp`:**
 ```
 timestamp|ball_name,X,Y,Z;ball_name,X,Y,Z
@@ -128,12 +154,13 @@ timestamp|ball_name,X,Y,Z;ball_name,X,Y,Z
 ```
 pink,0.15,-0.20,0.88;orange,-0.10,0.35,0.92
 green,0.05,0.12,1.15;yellow,0.25,0.18,0.95
-pink,0.18,-0.18,0.85;orange,-0.08,0.38,0.94;green,0.02,0.15,1.12;yellow,0.28,0.20,0.98
+pink,0.18,-0.18,0.85,free;orange,-0.08,0.38,0.94,held
 ```
 
 Where:
 - `ball_name`: "pink", "orange", "green", or "yellow"
 - `X,Y,Z`: 3D coordinates in meters relative to the camera coordinate system
+- `status`: "held" or "free" (only if hand tracking is enabled)
 - Multiple balls are separated by semicolons (`;`)
 - Each frame outputs one line (empty line if no balls detected)
 

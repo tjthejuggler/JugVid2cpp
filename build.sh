@@ -20,7 +20,20 @@ cd build
 
 # Configure with CMake
 echo "Configuring with CMake..."
-cmake .. -DCMAKE_BUILD_TYPE=Release
+# Check for --with-hands flag
+if [[ "$1" == "--with-hands" ]]; then
+    echo "Hand tracking build ENABLED."
+    # IMPORTANT: You must provide the correct path to your MediaPipe installation
+    MEDIAPIPE_PATH="/home/twain/Projects/mediapipe"
+    if [ ! -d "$MEDIAPIPE_PATH" ]; then
+        echo "Error: MediaPipe directory not found at $MEDIAPIPE_PATH"
+        exit 1
+    fi
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DENABLE_HAND_TRACKING=ON -DMEDIAPIPE_DIR=${MEDIAPIPE_PATH}
+else
+    echo "Standard build (hand tracking DISABLED)."
+    cmake .. -DCMAKE_BUILD_TYPE=Release
+fi
 
 # Build the application
 echo "Building application..."
